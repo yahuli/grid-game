@@ -1,35 +1,32 @@
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getDb } from '../../../lib/db';
+import { getAdminByUsername } from '../../../lib/db';
+import { signToken } from '../../../lib/auth';
+import bcrypt from 'bcryptjs';
 
-export default async function handler(
-    req: NextApiRequest,
-    res: NextApiResponse
-) {
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
     if (req.method !== 'POST') {
         return res.status(405).json({ message: 'Method not allowed' });
     }
 
-    const { uuid } = req.body;
+    const { username, password } = req.body;
 
-    if (!uuid) {
-        return res.status(400).json({ message: 'UUID is required' });
+    if (!username || !password) {
+        return res.status(400).json({ message: 'Missing credentials' });
     }
 
-    try {
-        const db = await getDb();
-        const now = Date.now();
+    const admin = await getAdminByUsername(username);
 
-        const player = await db.get('SELECT * FROM players WHERE uuid = ?', uuid);
-
-        if (player) {
-            await db.run('UPDATE players SET last_login = ? WHERE uuid = ?', now, uuid);
-            res.status(200).json({ message: 'Login successful', isNew: false });
-        } else {
-            await db.run('INSERT INTO players (uuid, last_login, created_at) VALUES (?, ?, ?)', uuid, now, now);
-            res.status(201).json({ message: 'Player created', isNew: true });
-        }
-    } catch (error) {
-        console.error('Database error:', error);
-        res.status(500).json({ message: 'Internal server error' });
+    if (!admin) {
+        return res.status(401).json({ message: 'Invalid credentials' });
     }
+
+    const isValid = await bcrypt.compare(password, admin.password_hash);
+
+    if (!isValid) {
+        return res.status(401).json({ message: 'Invalid credentials' });
+    }
+
+    const token = signToken({ id: admin.id, username: admin.username });
+
+    res.status(200).json({ token });
 }

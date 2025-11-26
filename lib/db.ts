@@ -1,5 +1,6 @@
 import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
+import bcrypt from 'bcryptjs';
 
 let db: Database | null = null;
 
@@ -43,10 +44,11 @@ export async function getDb() {
       value TEXT
     );
 
-    CREATE TABLE IF NOT EXISTS shapes (
+    CREATE TABLE IF NOT EXISTS admins (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      shape_data TEXT,
-      type TEXT DEFAULT 'host'
+      username TEXT UNIQUE,
+      password_hash TEXT,
+      created_at INTEGER
     );
   `);
 
@@ -60,13 +62,14 @@ export async function getDb() {
   }
 
   await initShapes(db);
+  await initAdmins(db);
 
   return db;
 }
 
 async function initShapes(database: Database) {
-  const count = await database.get('SELECT COUNT(*) as count FROM shapes');
-  if (count.count === 0) {
+  const shapesConfig = await database.get('SELECT * FROM game_config WHERE key = ?', 'default_shapes');
+  if (!shapesConfig) {
     const defaultShapes = [
       [[1, 1], [1, 1]],
       [[1, 1, 1, 1]],
@@ -76,18 +79,77 @@ async function initShapes(database: Database) {
       [[1, 1, 0], [0, 1, 1]],
       [[1]],
     ];
+    await database.run('INSERT INTO game_config (key, value) VALUES (?, ?)', 'default_shapes', JSON.stringify(defaultShapes));
+    console.log('Default shapes initialized in config.');
+  }
+}
 
-    for (const shape of defaultShapes) {
-      await database.run('INSERT INTO shapes (shape_data, type) VALUES (?, ?)', JSON.stringify(shape), 'host');
-    }
-    console.log('Default shapes initialized.');
+async function initAdmins(database: Database) {
+  const admin = await database.get('SELECT * FROM admins WHERE username = ?', 'admin');
+  if (!admin) {
+    const hash = await bcrypt.hash('admin123', 10);
+    await database.run('INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, ?)', 'admin', hash, Date.now());
+    console.log('Default admin initialized.');
   }
 }
 
 export async function getShapes() {
   const database = await getDb();
-  const shapes = await database.all('SELECT shape_data FROM shapes WHERE type = ?', 'host');
-  return shapes.map(s => JSON.parse(s.shape_data));
+  const config = await database.get('SELECT value FROM game_config WHERE key = ?', 'default_shapes');
+  return config ? JSON.parse(config.value) : [];
+}
+
+export async function getAdminByUsername(username: string) {
+  const database = await getDb();
+  return database.get('SELECT * FROM admins WHERE username = ?', username);
+}
+
+export async function createAdmin(username: string, password: string) {
+  const database = await getDb();
+  const hash = await bcrypt.hash(password, 10);
+  try {
+    await database.run('INSERT INTO admins (username, password_hash, created_at) VALUES (?, ?, ?)', username, hash, Date.now());
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+export async function getAllAdmins() {
+  const database = await getDb();
+  return database.all('SELECT id, username, created_at FROM admins');
+}
+
+export async function deleteAdmin(id: number) {
+  const database = await getDb();
+  await database.run('DELETE FROM admins WHERE id = ?', id);
+}
+
+export async function getAllPlayers() {
+  const database = await getDb();
+  return database.all('SELECT uuid, last_login, created_at FROM players ORDER BY last_login DESC');
+}
+
+export async function deletePlayer(uuid: string) {
+  const database = await getDb();
+  await database.run('DELETE FROM players WHERE uuid = ?', uuid);
+}
+
+export async function updateConfig(key: string, value: any) {
+  const database = await getDb();
+  // Check if exists
+  const existing = await database.get('SELECT key FROM game_config WHERE key = ?', key);
+  if (existing) {
+    await database.run('UPDATE game_config SET value = ? WHERE key = ?', JSON.stringify(value), key);
+  } else {
+    await database.run('INSERT INTO game_config (key, value) VALUES (?, ?)', key, JSON.stringify(value));
+  }
+}
+
+export async function getConfig(key: string) {
+  const database = await getDb();
+  const res = await database.get('SELECT value FROM game_config WHERE key = ?', key);
+  return res ? JSON.parse(res.value) : null;
 }
 
 export async function saveGame(game: any) {

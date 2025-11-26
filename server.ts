@@ -1,8 +1,9 @@
 import { createServer } from "node:http";
 import next from "next";
-import { Server } from "socket.io";
+import { Server, Socket } from "socket.io";
 import fs from 'fs';
 import path from 'path';
+import { getDb, saveGame, loadGame, getShapes } from './lib/db';
 
 const dev = process.env.NODE_ENV !== "production";
 const hostname = "0.0.0.0";
@@ -12,47 +13,37 @@ const app = next({ dev, hostname, port });
 const handler = app.getRequestHandler();
 
 const DEFAULT_BOARD_SIZE = 14;
-const ALL_SHAPES = [
-    [[1, 1], [1, 1]],
-    [[1, 1, 1, 1]],
-    [[1, 0, 0], [1, 1, 1]],
-    [[0, 1, 0], [1, 1, 1]],
-    [[0, 1, 1], [1, 1, 0]],
-    [[1, 1, 0], [0, 1, 1]],
-    [[1]],
-];
 
-let ALL_IMAGES = [];
+// In-memory game state (still needed for active games, but backed by DB)
+const games: Record<string, any> = {};
 
-// Load images on startup
-try {
-    const imageDir = path.join(process.cwd(), 'public/image');
-    if (fs.existsSync(imageDir)) {
-        const files = fs.readdirSync(imageDir);
-        ALL_IMAGES = files.filter(file => /\.(png|jpg|jpeg|gif)$/i.test(file)).map(file => {
-            const match = file.match(/(\d+)[xX](\d+)/);
-            const width = match ? parseInt(match[1]) : 1;
-            const height = match ? parseInt(match[2]) : 1;
-            // Create a matrix of 1s based on dimensions
-            const shapeMatrix = Array(height).fill(0).map(() => Array(width).fill(1));
-            return {
-                id: file, // Use filename as ID
-                src: `/image/${file}`,
-                width,
-                height,
-                shape: shapeMatrix
-            };
-        });
-        console.log(`Loaded ${ALL_IMAGES.length} images.`);
-    }
-} catch (e) {
-    console.error("Failed to load images:", e);
+interface Shape {
+    id?: string;
+    src?: string;
+    width?: number;
+    height?: number;
+    shape: number[][];
+    instanceId?: string;
+    rotation?: number;
+    row?: number;
+    col?: number;
 }
 
-// In-memory game state
-const games = {};
+interface GameState {
+    roomId: string;
+    host: string;
+    guest: string | null;
+    gameState: 'SETUP' | 'PLAY' | 'GAMEOVER';
+    board: number[][];
+    placedMines: any[];
+    placedImages: any[];
+    hostShapes: number[][][];
+    guestShapes: Shape[];
+    mineIdCounter: number;
+    winner?: string;
+}
 
-function getShapeCells(shape, startRow, startCol) {
+function getShapeCells(shape: number[][], startRow: number, startCol: number) {
     const cells = [];
     for (let r = 0; r < shape.length; r++) {
         for (let c = 0; c < shape[r].length; c++) {
@@ -64,18 +55,26 @@ function getShapeCells(shape, startRow, startCol) {
     return cells;
 }
 
-function isOutOfBounds(r, c, rows, cols) {
+function isOutOfBounds(r: number, c: number, rows: number, cols: number) {
     return r < 0 || r >= rows || c < 0 || c >= cols;
 }
 
-app.prepare().then(() => {
+app.prepare().then(async () => {
     const httpServer = createServer(handler);
     const io = new Server(httpServer);
 
-    io.on("connection", (socket) => {
+    // Initialize DB and Shapes
+    try {
+        await getDb();
+        console.log("Database initialized");
+    } catch (e) {
+        console.error("Failed to init DB:", e);
+    }
+
+    io.on("connection", (socket: Socket) => {
         console.log('New client connected', socket.id);
 
-        socket.on('create-room', (data, callback) => {
+        socket.on('create-room', async (data, callback) => {
             if (typeof data === 'function') { callback = data; data = {}; }
             let roomId = Math.random().toString(36).substring(2, 8).toUpperCase();
             while (games[roomId]) {
@@ -85,6 +84,15 @@ app.prepare().then(() => {
             const rows = data.rows || DEFAULT_BOARD_SIZE;
             const cols = data.cols || DEFAULT_BOARD_SIZE;
 
+            // Load shapes from DB
+            let hostShapes = [];
+            try {
+                hostShapes = await getShapes();
+            } catch (e) {
+                console.error("Failed to load shapes from DB", e);
+                // Fallback if DB fails? Or just empty.
+            }
+
             games[roomId] = {
                 roomId,
                 host: uuid,
@@ -92,20 +100,20 @@ app.prepare().then(() => {
                 gameState: 'SETUP',
                 board: Array(rows).fill(0).map(() => Array(cols).fill(0)),
                 placedMines: [],
-                placedImages: [], // Track placed images
-                hostShapes: [...ALL_SHAPES], // Host uses abstract shapes
-                guestShapes: [], // Guest uses images
+                placedImages: [],
+                hostShapes: hostShapes,
+                guestShapes: [],
                 mineIdCounter: 0
             };
 
             socket.join(roomId);
-            callback(roomId);
+            callback({ roomId, game: games[roomId] });
             console.log(`Room created: ${roomId} (${rows}x${cols})`);
 
-            saveGameToDb(games[roomId]);
+            saveGame(games[roomId]);
         });
 
-        socket.on('resize-board', ({ roomId, rows, cols }) => {
+        socket.on('resize-board', async ({ roomId, rows, cols }) => {
             const game = games[roomId];
             if (!game || game.gameState !== 'SETUP') return;
 
@@ -116,14 +124,20 @@ app.prepare().then(() => {
             game.board = Array(newRows).fill(0).map(() => Array(newCols).fill(0));
             game.placedMines = []; // Clear mines on resize
             game.placedImages = [];
-            game.hostShapes = [...ALL_SHAPES]; // Reset shapes
+
+            // Reload shapes from DB to reset them
+            try {
+                game.hostShapes = await getShapes();
+            } catch (e) {
+                console.error("Failed to reload shapes", e);
+            }
 
             io.to(roomId).emit('board-resized', {
                 board: game.board,
                 placedMines: game.placedMines,
                 hostShapes: game.hostShapes
             });
-            saveGameToDb(game);
+            saveGame(game);
         });
 
         socket.on('join-room', async (data, callback) => {
@@ -135,20 +149,11 @@ app.prepare().then(() => {
 
             if (!game) {
                 try {
-                    const res = await fetch(`http://127.0.0.1:${port}/api/game/${roomId}`);
-                    if (res.ok) {
-                        const dbGame = await res.json();
+                    const dbGame = await loadGame(roomId);
+                    if (dbGame) {
                         game = {
-                            roomId: dbGame.room_id,
-                            host: dbGame.host,
-                            guest: dbGame.guest,
-                            gameState: dbGame.gameState,
-                            board: dbGame.board,
-                            placedMines: dbGame.placedMines,
-                            placedImages: dbGame.placedImages || [],
-                            hostShapes: dbGame.hostShapes || [...ALL_SHAPES],
-                            guestShapes: dbGame.guestShapes || [],
-                            mineIdCounter: dbGame.placedMines.length > 0 ? Math.max(...dbGame.placedMines.map(m => m.id)) + 1 : 0
+                            ...dbGame,
+                            mineIdCounter: dbGame.placedMines.length > 0 ? Math.max(...dbGame.placedMines.map((m: any) => m.id)) + 1 : 0
                         };
                         games[roomId] = game;
                         console.log(`Game restored from DB: ${roomId}`);
@@ -169,7 +174,7 @@ app.prepare().then(() => {
                 if (!game.host) game.host = uuid;
                 else if (!game.guest && game.host !== uuid) {
                     game.guest = uuid;
-                    saveGameToDb(game);
+                    saveGame(game);
                 }
 
                 callback({ success: true });
@@ -187,15 +192,12 @@ app.prepare().then(() => {
             if (game.host !== hostUuid) return;
 
             game.placedMines = placedMines;
-            game.placedMines = placedMines;
-            // No default images for Guest. Host must give them.
-
             game.gameState = 'PLAY';
 
             const rows = game.board.length;
             const cols = game.board[0].length;
 
-            game.placedMines.forEach(m => {
+            game.placedMines.forEach((m: any) => {
                 getShapeCells(m.shape, m.row, m.col).forEach(({ r, c }) => {
                     if (!isOutOfBounds(r, c, rows, cols)) game.board[r][c] = 1;
                 });
@@ -207,7 +209,7 @@ app.prepare().then(() => {
                 hostUuid
             });
 
-            saveGameToDb(game);
+            saveGame(game);
         });
 
         socket.on('place-mine', ({ roomId, shape, row, col, isMove, mineId }) => {
@@ -220,7 +222,7 @@ app.prepare().then(() => {
             const cells = getShapeCells(shape, row, col);
             const canPlace = cells.every(({ r, c }) => {
                 if (isOutOfBounds(r, c, rows, cols)) return false;
-                return !game.placedMines.some(m => {
+                return !game.placedMines.some((m: any) => {
                     if (isMove && m.id === mineId) return false;
                     const mCells = getShapeCells(m.shape, m.row, m.col);
                     return mCells.some(mc => mc.r === r && mc.c === c);
@@ -229,20 +231,20 @@ app.prepare().then(() => {
 
             if (canPlace) {
                 if (!isMove) {
-                    const shapeIndex = game.hostShapes.findIndex(s => JSON.stringify(s) === JSON.stringify(shape));
+                    const shapeIndex = game.hostShapes.findIndex((s: any) => JSON.stringify(s) === JSON.stringify(shape));
                     if (shapeIndex !== -1) {
                         game.hostShapes.splice(shapeIndex, 1);
                     }
                 }
 
                 if (isMove && mineId !== undefined) {
-                    game.placedMines = game.placedMines.filter(m => m.id !== mineId);
+                    game.placedMines = game.placedMines.filter((m: any) => m.id !== mineId);
                 }
                 const id = (isMove && mineId !== undefined) ? mineId : game.mineIdCounter++;
                 game.placedMines.push({ id, shape, row, col });
 
                 game.board = Array(rows).fill(0).map(() => Array(cols).fill(0));
-                game.placedMines.forEach(m => {
+                game.placedMines.forEach((m: any) => {
                     getShapeCells(m.shape, m.row, m.col).forEach(({ r, c }) => {
                         if (!isOutOfBounds(r, c, rows, cols)) game.board[r][c] = 1;
                     });
@@ -253,7 +255,7 @@ app.prepare().then(() => {
                     board: game.board,
                     hostShapes: game.hostShapes
                 });
-                saveGameToDb(game);
+                saveGame(game);
             }
         });
 
@@ -266,7 +268,7 @@ app.prepare().then(() => {
             const cols = game.board[0].length;
 
             // shape is now an object for Guest: { shape: matrix, ... }
-            const shapeMatrix = shape.shape || shape; // Handle legacy or new structure
+            const shapeMatrix = shape.shape || shape;
 
             const cells = getShapeCells(shapeMatrix, row, col);
             const canPlace = cells.every(({ r, c }) => {
@@ -281,8 +283,7 @@ app.prepare().then(() => {
             }
 
             // Remove from guestShapes
-            // Identify by instanceId if available, or deep equality
-            const shapeIndex = game.guestShapes.findIndex(s => {
+            const shapeIndex = game.guestShapes.findIndex((s: any) => {
                 if (s.instanceId && shape.instanceId) return s.instanceId === shape.instanceId;
                 return JSON.stringify(s) === JSON.stringify(shape);
             });
@@ -295,7 +296,7 @@ app.prepare().then(() => {
             let hitMineId = null;
 
             for (const cell of cells) {
-                const mine = game.placedMines.find(m => {
+                const mine = game.placedMines.find((m: any) => {
                     const mCells = getShapeCells(m.shape, m.row, m.col);
                     return mCells.some(mc => mc.r === cell.r && mc.c === cell.c);
                 });
@@ -320,7 +321,7 @@ app.prepare().then(() => {
             }
 
             if (hitMine && hitMineId !== null) {
-                const mine = game.placedMines.find(m => m.id === hitMineId);
+                const mine = game.placedMines.find((m: any) => m.id === hitMineId);
                 if (mine) {
                     getShapeCells(mine.shape, mine.row, mine.col).forEach(({ r, c }) => {
                         if (!isOutOfBounds(r, c, rows, cols)) game.board[r][c] = 3;
@@ -334,7 +335,7 @@ app.prepare().then(() => {
 
             const totalCells = rows * cols;
             const mineSet = new Set();
-            game.placedMines.forEach(m => {
+            game.placedMines.forEach((m: any) => {
                 getShapeCells(m.shape, m.row, m.col).forEach(({ r, c }) => mineSet.add(`${r},${c}`));
             });
             const mineCount = mineSet.size;
@@ -360,19 +361,18 @@ app.prepare().then(() => {
                 winner: game.winner
             });
 
-            saveGameToDb(game);
+            saveGame(game);
         });
 
         socket.on('give-shape', ({ roomId, shape }) => {
             const game = games[roomId];
             if (!game) return;
 
-            // shape here is the image object from Host
             const newShape = { ...shape, instanceId: Math.random().toString(36).substr(2, 9) };
             game.guestShapes.push(newShape);
 
             io.to(roomId).emit('shapes-updated', { guestShapes: game.guestShapes });
-            saveGameToDb(game);
+            saveGame(game);
         });
 
         socket.on('preview-shape', ({ roomId, previewCells }) => {
@@ -393,26 +393,3 @@ app.prepare().then(() => {
             console.log(`> Ready on http://${hostname}:${port}`);
         });
 });
-
-async function saveGameToDb(game) {
-    try {
-        await fetch(`http://127.0.0.1:${port}/api/game/save`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                roomId: game.roomId,
-                host: game.host,
-                guest: game.guest,
-                state: game.gameState,
-                boardState: game.board,
-                placedMines: game.placedMines,
-                placedImages: game.placedImages,
-                hostShapes: game.hostShapes,
-                guestShapes: game.guestShapes,
-                winner: game.winner
-            })
-        });
-    } catch (e) {
-        console.error("Failed to save game", e);
-    }
-}

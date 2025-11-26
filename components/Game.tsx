@@ -7,15 +7,7 @@ import { socket } from '../app/socket';
 
 const BOARD_SIZE = 14;
 
-const ALL_SHAPES: number[][][] = [
-    [[1, 1], [1, 1]],
-    [[1, 1, 1, 1]],
-    [[1, 0, 0], [1, 1, 1]],
-    [[0, 1, 0], [1, 1, 1]],
-    [[0, 1, 1], [1, 1, 0]],
-    [[1, 1, 0], [0, 1, 1]],
-    [[1]],
-];
+// Shapes are now loaded from the server/DB
 
 interface Mine {
     id: number;
@@ -73,7 +65,7 @@ const Game: React.FC<{ playerUuid: string; initialGameId?: string }> = ({ player
     const [placedImages, setPlacedImages] = useState<any[]>([]);
     const [statusMessage, setStatusMessage] = useState<string>('Waiting to start...');
 
-    const [hostShapes, setHostShapes] = useState<number[][][]>([...ALL_SHAPES]);
+    const [hostShapes, setHostShapes] = useState<number[][][]>([]);
     const [guestShapes, setGuestShapes] = useState<any[]>([]);
     const [availableImages, setAvailableImages] = useState<ImageShape[]>([]);
     const [selectedImageToGive, setSelectedImageToGive] = useState<ImageShape | null>(null);
@@ -243,11 +235,20 @@ const Game: React.FC<{ playerUuid: string; initialGameId?: string }> = ({ player
 
 
     const createRoom = () => {
-        socket.emit('create-room', { uuid: playerUuid }, (id: string) => {
-            setRoomId(id);
+        socket.emit('create-room', { uuid: playerUuid }, (response: { roomId: string, game: any }) => {
+            const { roomId, game } = response;
+            setRoomId(roomId);
             setIsHost(true);
             setIsLobby(false);
             setStatusMessage('等待玩家加入...');
+
+            // Sync initial state including shapes
+            if (game) {
+                setBoard(game.board);
+                setPlacedMines(game.placedMines);
+                setHostShapes(game.hostShapes || []);
+                setGameState(game.gameState);
+            }
         });
     };
 

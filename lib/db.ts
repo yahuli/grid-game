@@ -42,6 +42,12 @@ export async function getDb() {
       key TEXT PRIMARY KEY,
       value TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS shapes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      shape_data TEXT,
+      type TEXT DEFAULT 'host'
+    );
   `);
 
   // Insert default config if not exists
@@ -53,5 +59,111 @@ export async function getDb() {
     }));
   }
 
+  await initShapes(db);
+
   return db;
+}
+
+async function initShapes(database: Database) {
+  const count = await database.get('SELECT COUNT(*) as count FROM shapes');
+  if (count.count === 0) {
+    const defaultShapes = [
+      [[1, 1], [1, 1]],
+      [[1, 1, 1, 1]],
+      [[1, 0, 0], [1, 1, 1]],
+      [[0, 1, 0], [1, 1, 1]],
+      [[0, 1, 1], [1, 1, 0]],
+      [[1, 1, 0], [0, 1, 1]],
+      [[1]],
+    ];
+
+    for (const shape of defaultShapes) {
+      await database.run('INSERT INTO shapes (shape_data, type) VALUES (?, ?)', JSON.stringify(shape), 'host');
+    }
+    console.log('Default shapes initialized.');
+  }
+}
+
+export async function getShapes() {
+  const database = await getDb();
+  const shapes = await database.all('SELECT shape_data FROM shapes WHERE type = ?', 'host');
+  return shapes.map(s => JSON.parse(s.shape_data));
+}
+
+export async function saveGame(game: any) {
+  const database = await getDb();
+  const now = Date.now();
+
+  // Check if game exists
+  const existing = await database.get('SELECT id FROM games WHERE room_id = ?', game.roomId);
+
+  if (existing) {
+    await database.run(`
+      UPDATE games SET 
+        host_uuid = ?, 
+        guest_uuid = ?, 
+        state = ?, 
+        board_state = ?, 
+        placed_mines = ?, 
+        host_shapes = ?, 
+        guest_shapes = ?, 
+        placed_images = ?, 
+        winner = ?, 
+        updated_at = ?
+      WHERE room_id = ?
+    `,
+      game.host,
+      game.guest,
+      game.gameState,
+      JSON.stringify(game.board),
+      JSON.stringify(game.placedMines),
+      JSON.stringify(game.hostShapes),
+      JSON.stringify(game.guestShapes),
+      JSON.stringify(game.placedImages),
+      game.winner,
+      now,
+      game.roomId
+    );
+  } else {
+    await database.run(`
+      INSERT INTO games (
+        id, room_id, host_uuid, guest_uuid, state, board_state, 
+        placed_mines, host_shapes, guest_shapes, placed_images, winner, created_at, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `,
+      game.roomId, // Using roomId as ID for simplicity or generate a new UUID
+      game.roomId,
+      game.host,
+      game.guest,
+      game.gameState,
+      JSON.stringify(game.board),
+      JSON.stringify(game.placedMines),
+      JSON.stringify(game.hostShapes),
+      JSON.stringify(game.guestShapes),
+      JSON.stringify(game.placedImages),
+      game.winner,
+      now,
+      now
+    );
+  }
+}
+
+export async function loadGame(roomId: string) {
+  const database = await getDb();
+  const game = await database.get('SELECT * FROM games WHERE room_id = ?', roomId);
+
+  if (!game) return null;
+
+  return {
+    roomId: game.room_id,
+    host: game.host_uuid,
+    guest: game.guest_uuid,
+    gameState: game.state,
+    board: JSON.parse(game.board_state),
+    placedMines: JSON.parse(game.placed_mines),
+    hostShapes: JSON.parse(game.host_shapes),
+    guestShapes: JSON.parse(game.guest_shapes),
+    placedImages: JSON.parse(game.placed_images),
+    winner: game.winner
+  };
 }

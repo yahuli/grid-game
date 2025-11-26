@@ -14,7 +14,7 @@ interface Player {
 }
 
 const AdminDashboard = () => {
-    const [activeTab, setActiveTab] = useState<'admins' | 'players' | 'config'>('admins');
+    const [activeTab, setActiveTab] = useState<'admins' | 'players' | 'config' | 'account'>('admins');
     const [admins, setAdmins] = useState<Admin[]>([]);
     const [players, setPlayers] = useState<Player[]>([]);
     const [newAdminUser, setNewAdminUser] = useState('');
@@ -22,6 +22,8 @@ const AdminDashboard = () => {
     const [config, setConfig] = useState<any>({});
     const [shapes, setShapes] = useState<number[][][]>([]);
     const [message, setMessage] = useState('');
+    const [oldPass, setOldPass] = useState('');
+    const [newPass, setNewPass] = useState('');
 
     useEffect(() => {
         fetchAdmins();
@@ -131,6 +133,25 @@ const AdminDashboard = () => {
         }
     };
 
+    const changePassword = async (e: React.FormEvent) => {
+        e.preventDefault();
+        const token = localStorage.getItem('admin_token');
+        const res = await fetch('/api/admin/change-password', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify({ oldPassword: oldPass, newPassword: newPass })
+        });
+        const data = await res.json();
+        setMessage(data.message);
+        if (res.ok) {
+            setOldPass('');
+            setNewPass('');
+        }
+    };
+
     const updateShape = (shapeIndex: number, row: number, col: number) => {
         const newShapes = JSON.parse(JSON.stringify(shapes));
         newShapes[shapeIndex][row][col] = newShapes[shapeIndex][row][col] === 1 ? 0 : 1;
@@ -184,6 +205,12 @@ const AdminDashboard = () => {
                         onClick={() => setActiveTab('config')}
                     >
                         Config (Shapes)
+                    </button>
+                    <button
+                        className={activeTab === 'account' ? 'active' : ''}
+                        onClick={() => setActiveTab('account')}
+                    >
+                        Account
                     </button>
                 </div>
 
@@ -291,6 +318,27 @@ const AdminDashboard = () => {
                         <button onClick={addShape} className="btn-add-shape">+ Add New Shape</button>
                         <hr />
                         <button onClick={saveShapes} className="btn-save">Save All Shapes</button>
+                    </div>
+                )}
+
+                {activeTab === 'account' && (
+                    <div className="tab-content">
+                        <h2>Change Password</h2>
+                        <form onSubmit={changePassword} className="create-form" style={{ flexDirection: 'column', maxWidth: '300px' }}>
+                            <input
+                                type="password"
+                                placeholder="Old Password"
+                                value={oldPass}
+                                onChange={e => setOldPass(e.target.value)}
+                            />
+                            <input
+                                type="password"
+                                placeholder="New Password"
+                                value={newPass}
+                                onChange={e => setNewPass(e.target.value)}
+                            />
+                            <button type="submit">Update Password</button>
+                        </form>
                     </div>
                 )}
             </div>

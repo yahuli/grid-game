@@ -125,6 +125,12 @@ export async function deleteAdmin(id: number) {
   await database.run('DELETE FROM admins WHERE id = ?', id);
 }
 
+export async function changeAdminPassword(id: number, newPassword: string) {
+  const database = await getDb();
+  const hash = await bcrypt.hash(newPassword, 10);
+  await database.run('UPDATE admins SET password_hash = ? WHERE id = ?', hash, id);
+}
+
 export async function getAllPlayers() {
   const database = await getDb();
   return database.all('SELECT uuid, last_login, created_at FROM players ORDER BY last_login DESC');

@@ -1,8 +1,7 @@
 import fs from 'fs';
 import path from 'path';
-import { NextApiRequest, NextApiResponse } from 'next';
 
-export default function handler(req: NextApiRequest, res: NextApiResponse) {
+export async function GET(request: Request) {
     const imageDir = path.join(process.cwd(), 'public/image');
     try {
         const files = fs.readdirSync(imageDir);
@@ -20,9 +19,9 @@ export default function handler(req: NextApiRequest, res: NextApiResponse) {
                 shape: shapeMatrix
             };
         });
-        res.status(200).json(images);
+        return Response.json(images, { status: 200 });
     } catch (error) {
         console.error("Error reading image directory:", error);
-        res.status(500).json({ error: 'Failed to list images' });
+        return Response.json({ error: 'Failed to list images' }, { status: 500 });
     }
 }

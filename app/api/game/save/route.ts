@@ -1,16 +1,19 @@
-import type { NextApiRequest, NextApiResponse } from 'next';
-import { getDb } from '../../../lib/db';
+import { getDb } from '../../../../lib/db';
 import { v4 as uuidv4 } from 'uuid';
 
-export default async function handler(
-    req: NextApiRequest,
-    res: NextApiResponse
-) {
-    if (req.method !== 'POST') {
-        return res.status(405).json({ message: 'Method not allowed' });
-    }
-
-    const { roomId, host, guest, state, boardState, placedMines, placedImages, hostShapes, guestShapes, winner } = req.body;
+export async function POST(request: Request) {
+    const {
+        roomId, 
+        host, 
+        guest, 
+        state, 
+        boardState, 
+        placedMines, 
+        placedImages, 
+        hostShapes, 
+        guestShapes, 
+        winner 
+    } = await request.json();
 
     try {
         const db = await getDb();
@@ -31,7 +34,7 @@ export default async function handler(
                 JSON.stringify(hostShapes), JSON.stringify(guestShapes),
                 winner, now, roomId
             );
-            res.status(200).json({ message: 'Game updated', gameId: existingGame.id });
+            return Response.json({ message: 'Game updated', gameId: existingGame.id }, { status: 200 });
         } else {
             const id = uuidv4();
             await db.run(
@@ -42,11 +45,11 @@ export default async function handler(
                 JSON.stringify(hostShapes), JSON.stringify(guestShapes),
                 winner, now, now
             );
-            res.status(200).json({ message: 'Game created', gameId: id });
+            return Response.json({ message: 'Game created', gameId: id }, { status: 200 });
         }
 
     } catch (error) {
         console.error('Database error:', error);
-        res.status(500).json({ message: 'Internal server error' });
+        return Response.json({ message: 'Internal server error' }, { status: 500 });
     }
 }

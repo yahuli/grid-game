@@ -4,8 +4,8 @@ import { verifyToken } from '../../../../lib/auth';
 async function authenticate(request: Request) {
     const authHeader = request.headers.get('authorization');
     const token = authHeader?.split(' ')[1];
-    
-    if (!token || !verifyToken(token)) {
+
+    if (!token || !(await verifyToken(token))) {
         return false;
     }
     return true;
@@ -15,7 +15,7 @@ export async function GET(request: Request) {
     if (!(await authenticate(request))) {
         return Response.json({ message: 'Unauthorized' }, { status: 401 });
     }
-    
+
     try {
         const players = await getAllPlayers();
         return Response.json(players, { status: 200 });

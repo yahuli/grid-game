@@ -2,6 +2,8 @@ import sqlite3 from 'sqlite3';
 import { open, Database } from 'sqlite';
 import bcrypt from 'bcryptjs';
 
+import fs from 'fs';
+
 let db: Database | null = null;
 
 export async function getDb() {
@@ -9,8 +11,14 @@ export async function getDb() {
     return db;
   }
 
+  const dbPath = './grid-game.db';
+  if (!fs.existsSync(dbPath)) {
+    fs.writeFileSync(dbPath, '');
+    console.log('Created new database file.');
+  }
+
   db = await open({
-    filename: './grid-game.db',
+    filename: dbPath,
     driver: sqlite3.Database
   });
 
